@@ -1,5 +1,3 @@
-# WAF-combin-SafeLine-ModSecurity-sous-NGINX
-
 # Projet WAF combiné SafeLine + ModSecurity sous NGINX
 
 Ce projet vise à déployer un système WAF robuste en combinant deux technologies complémentaires :  
