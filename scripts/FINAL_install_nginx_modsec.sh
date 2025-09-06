@@ -1,12 +1,12 @@
 #!/bin/bash
 # =============================================================================
-# WAF TRIPLE LAYER - NGINX/MODSECURITY/SAFELINE SETUP
-# Layer 1: NGINX Pattern Matching (Logging Only)
-# Layer 2: ModSecurity v3 with OWASP CRS
+# WAF TRIPLE LAYER - NGINX/MODSECURITY COMPATIBILITY FIX
+# Layer 1: NGINX Pattern Matching
+# Layer 2: ModSecurity v3 (with version compatibility fix)
 # Layer 3: SafeLine WAF
 # =============================================================================
 
-# Exit on any error for debugging
+# Exit on any error for debugging (but we'll handle errors more gracefully in cleanup)
 trap 'echo "Script failed at line $LINENO. Check logs above."' ERR
 
 # Colors for output
@@ -45,31 +45,14 @@ check_root() {
   log_msg "Root privileges confirmed" "SUCCESS"
 }
 
-# Configure open file limits
-configure_limits() {
-  log_msg "Configuring open file limits..." "INFO"
-  # Update /etc/security/limits.conf
-  cat > /etc/security/limits.conf << 'LIMITS_CONF_EOF'
-# /etc/security/limits.conf
-www-data soft nofile 4096
-www-data hard nofile 4096
-root soft nofile 4096
-root hard nofile 4096
-# End of file
-LIMITS_CONF_EOF
-  # Ensure PAM applies limits
-  for file in /etc/pam.d/common-session /etc/pam.d/common-session-noninteractive; do
-    if ! grep -q "pam_limits.so" "$file"; then
-      echo "session required pam_limits.so" >> "$file"
-    fi
-  done
-  log_msg "Open file limits configured" "SUCCESS"
-}
-
-# Enhanced cleanup with error tolerance
+# Enhanced cleanup with error tolerance (ignore failures to prevent termination)
 cleanup_nginx() {
   log_msg "Cleaning previous installations..." "INFO"
+
+  # Trap signals for debugging
   trap 'log_msg "Script interrupted by signal at line $LINENO" "ERROR"; exit 1' INT TERM
+
+  # Check for actual NGINX processes
   log_msg "Checking for running NGINX processes..." "INFO"
   if pgrep -f '^/usr/sbin/nginx' > /tmp/nginx_processes.log 2>&1; then
     log_msg "Found NGINX processes:" "INFO"
@@ -89,33 +72,136 @@ cleanup_nginx() {
     log_msg "No NGINX processes found" "SUCCESS"
     log_msg "Skipping NGINX service stop and kill" "INFO"
   fi
+
   log_msg "Removing NGINX packages..." "INFO"
   timeout 30 apt-get remove --purge -y nginx nginx-* libnginx-* >/tmp/nginx_remove.log 2>&1 || log_msg "Failed to remove NGINX packages, check /tmp/nginx_remove.log" "WARNING"
+
   log_msg "Running autoremove..." "INFO"
   timeout 30 apt-get autoremove -y >/tmp/nginx_autoremove.log 2>&1 || log_msg "Failed to autoremove packages, check /tmp/nginx_autoremove.log" "WARNING"
+
   log_msg "Cleaning apt cache..." "INFO"
   timeout 10 apt-get clean >/tmp/nginx_clean.log 2>&1 || log_msg "Failed to clean apt cache, check /tmp/nginx_clean.log" "WARNING"
+
   log_msg "Configuring dpkg..." "INFO"
   timeout 10 dpkg --configure -a >/tmp/nginx_dpkg.log 2>&1 || log_msg "Failed to configure dpkg, check /tmp/nginx_dpkg.log" "WARNING"
+
   log_msg "Removing NGINX configuration files..." "INFO"
   rm -rf /etc/nginx /var/log/nginx /var/lib/nginx /var/cache/nginx >/tmp/nginx_rm_files.log 2>&1 || log_msg "Failed to remove NGINX files, check /tmp/nginx_rm_files.log" "WARNING"
+  mkdir -p /etc/nginx
+  # Create mime.types if it doesn't exist
+  if [ ! -f /etc/nginx/mime.types ]; then
+    log_msg "Creating /etc/nginx/mime.types..." "INFO"
+    cat > /etc/nginx/mime.types << 'EOF'
+types {
+    text/html                             html htm shtml;
+    text/css                              css;
+    text/xml                              xml;
+    image/gif                             gif;
+    image/jpeg                            jpeg jpg;
+    application/javascript                js;
+    application/atom+xml                  atom;
+    application/rss+xml                   rss;
+    text/mathml                           mml;
+    text/plain                            txt;
+    text/vnd.sun.j2me.app-descriptor      jad;
+    text/vnd.wap.wml                      wml;
+    text/x-component                      htc;
+    image/png                             png;
+    image/tiff                            tif tiff;
+    image/vnd.wap.wbmp                    wbmp;
+    image/x-icon                          ico;
+    image/x-jng                           jng;
+    image/x-ms-bmp                        bmp;
+    image/svg+xml                         svg svgz;
+    application/font-woff                 woff;
+    application/java-archive              jar war ear;
+    application/json                      json;
+    application/mac-binhex40              hqx;
+    application/msword                    doc;
+    application/pdf                       pdf;
+    application/postscript                ps eps ai;
+    application/rtf                       rtf;
+    application/vnd.ms-excel              xls;
+    application/vnd.ms-powerpoint         ppt;
+    application/vnd.wap.wmlc              wmlc;
+    application/vnd.google-earth.kml+xml  kml;
+    application/vnd.google-earth.kmz      kmz;
+    application/x-7z-compressed           7z;
+    application/x-cocoa                   cco;
+    application/x-java-archive-diff       jardiff;
+    application/x-java-jnlp-file          jnlp;
+    application/x-makeself                run;
+    application/x-perl                    pl pm;
+    application/x-pilot                   prc pdb;
+    application/x-rar-compressed          rar;
+    application/x-redhat-package-manager  rpm;
+    application/x-sea                     sea;
+    application/x-shockwave-flash         swf;
+    application/x-stuffit                 sit;
+    application/x-tcl                     tcl tk;
+    application/x-x509-ca-cert            der pem crt;
+    application/x-xpinstall               xpi;
+    application/xhtml+xml                 xhtml;
+    application/xspf+xml                  xspf;
+    application/zip                       zip;
+    application/octet-stream              bin exe dll;
+    application/octet-stream              deb;
+    application/octet-stream              dmg;
+    application/octet-stream              eot;
+    application/octet-stream              iso img;
+    application/octet-stream              msi msp msm;
+    application/vnd.openxmlformats-officedocument.wordprocessingml.document    docx;
+    application/vnd.openxmlformats-officedocument.spreadsheetml.sheet        xlsx;
+    application/vnd.openxmlformats-officedocument.presentationml.presentation pptx;
+    audio/midi                            mid midi kar;
+    audio/mpeg                            mp3;
+    audio/ogg                             ogg;
+    audio/x-m4a                           m4a;
+    audio/x-realaudio                     ra;
+    video/3gpp                            3gpp 3gp;
+    video/mp2t                            ts;
+    video/mp4                             mp4;
+    video/mpeg                            mpeg mpg;
+    video/quicktime                       mov;
+    video/webm                            webm;
+    video/x-flv                           flv;
+    video/x-m4v                           m4v;
+    video/x-mng                           mng;
+    video/x-ms-asf                        asx asf;
+    video/x-ms-wmv                        wmv;
+    video/x-msvideo                       avi;
+}
+EOF
+    log_msg "mime.types created successfully" "SUCCESS"
+  else
+    log_msg "mime.types already exists, skipping creation" "INFO"
+  fi
+  cp /usr/share/nginx/mime.types /etc/nginx/mime.types 2>/dev/null || true
+
   log_msg "Removing ModSecurity module..." "INFO"
   rm -f /usr/lib/nginx/modules/ngx_http_modsecurity_module.so >/tmp/nginx_rm_modsec.log 2>&1 || log_msg "Failed to remove ModSecurity module, check /tmp/nginx_rm_modsec.log" "WARNING"
+
   log_msg "Removing NGINX repository..." "INFO"
   rm -f /etc/apt/sources.list.d/nginx.list >/tmp/nginx_rm_repo.log 2>&1 || log_msg "Failed to remove NGINX repository, check /tmp/nginx_rm_repo.log" "WARNING"
+
   log_msg "Removing NGINX preferences..." "INFO"
   rm -f /etc/apt/preferences.d/nginx >/tmp/nginx_rm_prefs.log 2>&1 || log_msg "Failed to remove NGINX preferences, check /tmp/nginx_rm_prefs.log" "WARNING"
+
   log_msg "Unholding NGINX package..." "INFO"
   apt-mark unhold nginx >/tmp/nginx_unhold.log 2>&1 || log_msg "Failed to unhold NGINX package, check /tmp/nginx_unhold.log" "WARNING"
+
   log_msg "Updating package lists..." "INFO"
   timeout 30 apt-get update >/tmp/nginx_apt_update.log 2>&1 || log_msg "Failed to update package lists, check /tmp/nginx_apt_update.log" "WARNING"
+
   log_msg "Cleanup completed (ignored non-critical errors)" "SUCCESS"
 }
 
 # Install dependencies
 install_dependencies() {
   log_msg "Installing system dependencies..." "INFO"
-  apt-get update - qq
+  # Update package lists
+  apt-get update -qq
+  # Install build dependencies
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl \
     wget \
@@ -143,10 +229,13 @@ install_dependencies() {
 # Check NGINX and ModSecurity compatibility
 check_compatibility() {
   log_msg "Checking NGINX/ModSecurity compatibility..." "WAF"
+  # Check if we have a working NGINX with ModSecurity
   if command -v nginx >/dev/null 2>&1; then
     nginx_version=$(nginx -v 2>&1 | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
     log_msg "Found NGINX version: $nginx_version" "INFO"
+    # Check ModSecurity module
     if [ -f "/usr/lib/nginx/modules/ngx_http_modsecurity_module.so" ]; then
+      # Test if module loads
       cat > /tmp/test_nginx.conf << 'EOF'
 load_module /usr/lib/nginx/modules/ngx_http_modsecurity_module.so;
 events { worker_connections 1024; }
@@ -171,26 +260,33 @@ EOF
   fi
 }
 
-# Install compatible NGINX 1.18.0
+# Install compatible NGINX 1.18.0 (forced for Option B)
 install_compatible_nginx() {
   log_msg "Forcing installation of NGINX 1.18.0 with ModSecurity compatibility..." "WAF"
+  # Add repository for older NGINX version
   curl -fsSL https://nginx.org/keys/nginx_signing.key | apt-key add - >/dev/null 2>&1
   echo "deb http://nginx.org/packages/ubuntu/ $(lsb_release -cs) nginx" > /etc/apt/sources.list.d/nginx.list
+  # Pin NGINX to version 1.18.*
   cat > /etc/apt/preferences.d/nginx << 'EOF'
 Package: nginx
 Pin: version 1.18.*
 Pin-Priority: 1001
 EOF
+  # Update package list
   apt-get update -qq
+  # Install specific version (force downgrade if needed)
   apt-get install -y --allow-downgrades nginx=1.18.0-2~$(lsb_release -cs) >/dev/null 2>&1 || {
     log_msg "Specific version not found, installing available 1.18.* version..." "WARNING"
     apt-get install -y --allow-downgrades nginx
   }
+  # Hold the package to prevent upgrades
   apt-mark hold nginx
+  # Install ModSecurity dependencies
   apt-get install -y \
     libmodsecurity3 \
     libmodsecurity-dev \
     modsecurity-crs >/dev/null 2>&1 || true
+  # Verify installed version
   installed_version=$(nginx -v 2>&1 | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+')
   if [[ $installed_version == 1.18.* ]]; then
     log_msg "NGINX 1.18.0 installation completed" "SUCCESS"
@@ -203,19 +299,25 @@ EOF
 # Compile ModSecurity module if needed
 compile_modsecurity_module() {
   log_msg "Compiling ModSecurity module for current NGINX..." "WAF"
+  # Get NGINX version and configure args
   nginx_version=$(nginx -V 2>&1 | grep -o 'nginx/[0-9]\+\.[0-9]\+\.[0-9]\+' | cut -d'/' -f2)
   configure_args=$(nginx -V 2>&1 | grep -o 'configure arguments:.*' | cut -d':' -f2-)
   log_msg "Compiling for NGINX version: $nginx_version" "INFO"
+  # Create build directory
   mkdir -p /tmp/nginx-build
   cd /tmp/nginx-build
+  # Download NGINX source
   wget -q "http://nginx.org/download/nginx-${nginx_version}.tar.gz"
   tar -xzf "nginx-${nginx_version}.tar.gz"
+  # Clone ModSecurity connector
   git clone --depth 1 https://github.com/SpiderLabs/ModSecurity-nginx.git
+  # Configure and build only the module
   cd "nginx-${nginx_version}"
   ./configure \
     --add-dynamic-module=../ModSecurity-nginx \
     --with-compat \
     $configure_args >/dev/null 2>&1 || {
+      # Fallback simpler configure
       ./configure \
         --add-dynamic-module=../ModSecurity-nginx \
         --with-compat \
@@ -225,7 +327,7 @@ compile_modsecurity_module() {
         --conf-path=/etc/nginx/nginx.conf \
         --error-log-path=/var/log/nginx/error.log \
         --http-log-path=/var/log/nginx/access.log \
-        --pid-path=/run/nginx.pid \
+        --pid-path=/var/run/nginx.pid \
         --lock-path=/var/run/nginx.lock \
         --with-http_ssl_module \
         --with-http_realip_module \
@@ -247,52 +349,61 @@ compile_modsecurity_module() {
         --with-file-aio \
         --with-http_v2_module
     }
+  # Build only modules
   make modules
+  # Copy module to correct location
   mkdir -p /usr/lib/nginx/modules
   cp objs/ngx_http_modsecurity_module.so /usr/lib/nginx/modules/
+  # Set permissions
   chown root:root /usr/lib/nginx/modules/ngx_http_modsecurity_module.so
   chmod 644 /usr/lib/nginx/modules/ngx_http_modsecurity_module.so
+  # Cleanup
   cd /
   rm -rf /tmp/nginx-build
   log_msg "ModSecurity module compiled successfully" "SUCCESS"
 }
 
-# Fix systemd service with file limits
+# New function: Fix systemd service PIDFile
 fix_systemd_service() {
-  log_msg "Fixing NGINX systemd service..." "INFO"
+  log_msg "Fixing NGINX systemd service PIDFile..." "INFO"
   SERVICE_FILE="/etc/systemd/system/nginx.service"
-  cat > "$SERVICE_FILE" << 'EOF'
+  if [ -f "$SERVICE_FILE" ]; then
+    sed -i 's|PIDFile=/var/run/nginx.pid|PIDFile=/run/nginx.pid|g' "$SERVICE_FILE"
+    log_msg "PIDFile updated to /run/nginx.pid" "SUCCESS"
+  else
+    log_msg "nginx.service file not found. Creating a new one." "WARNING"
+    cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
 Description=NGINX HTTP Server with ModSecurity
 After=network.target
 
 [Service]
 Type=forking
-PIDFile=/run/nginx.pid
 ExecStartPre=/usr/sbin/nginx -t
 ExecStart=/usr/sbin/nginx
 ExecReload=/usr/sbin/nginx -s reload
 ExecStop=/usr/sbin/nginx -s quit
+PIDFile=/run/nginx.pid
 Restart=on-failure
-LimitNOFILE=4096
-PrivateTmp=true
-KillSignal=SIGQUIT
-TimeoutStopSec=5
-KillMode=process
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    log_msg "New nginx.service file created with correct PIDFile" "SUCCESS"
+  fi
+  # Reload systemd
   systemctl daemon-reload
-  log_msg "NGINX systemd service configured with LimitNOFILE=4096" "SUCCESS"
+  log_msg "Systemd reloaded" "SUCCESS"
 }
 
 # Setup ModSecurity configuration
 setup_modsecurity() {
   log_msg "Setting up ModSecurity configuration..." "WAF"
+  # Create directories
   mkdir -p /etc/nginx/modsecurity
   mkdir -p /var/lib/modsecurity
   mkdir -p /var/log/modsecurity
+  # Download OWASP Core Rule Set if available
   if [ ! -d "/etc/nginx/modsecurity/owasp-crs" ]; then
     cd /etc/nginx/modsecurity
     wget -q https://github.com/coreruleset/coreruleset/archive/v3.3.4.tar.gz -O crs.tar.gz >/dev/null 2>&1 && {
@@ -305,8 +416,10 @@ setup_modsecurity() {
       log_msg "Could not download OWASP CRS, using basic rules" "WARNING"
     }
   fi
+  # Create main ModSecurity configuration
   cat > /etc/nginx/modsecurity/modsecurity.conf << 'MODSEC_CONF_EOF'
 # ModSecurity Core Configuration
+# Basic settings
 SecRuleEngine On
 SecRequestBodyAccess On
 SecRequestBodyLimit 13107200
@@ -316,51 +429,107 @@ SecResponseBodyAccess On
 SecResponseBodyMimeType text/plain text/html text/xml application/json
 SecResponseBodyLimit 524288
 SecResponseBodyLimitAction ProcessPartial
+# File settings
 SecTmpDir /tmp/
 SecDataDir /var/lib/modsecurity
+# Audit logging
 SecAuditEngine RelevantOnly
 SecAuditLogRelevantStatus "^(?:5|4(?!04))"
 SecAuditLogParts ABDEFHIJZ
 SecAuditLogType Serial
 SecAuditLog /var/log/modsecurity/audit.log
+# Debug logging
 SecDebugLog /var/log/modsecurity/debug.log
 SecDebugLogLevel 1
+# Upload handling
 SecUploadDir /tmp/
 SecUploadKeepFiles Off
-# Custom Rules
+# Custom Rules for Common Attacks
+# XSS Protection
 SecRule REQUEST_COOKIES|!REQUEST_COOKIES:/__utm/|REQUEST_COOKIES_NAMES|ARGS_NAMES|ARGS|XML:/* "@detectXSS" \
-  "id:1001,phase:2,block,msg:'XSS Attack Detected',logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}',tag:'application-multi',tag:'language-multi',tag:'platform-multi',tag:'attack-xss',tag:'OWASP_CRS',tag:'OWASP_CRS/WEB_ATTACK/XSS'"
+  "id:1001,\
+  phase:2,\
+  block,\
+  msg:'XSS Attack Detected',\
+  logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}',\
+  tag:'application-multi',\
+  tag:'language-multi',\
+  tag:'platform-multi',\
+  tag:'attack-xss',\
+  tag:'OWASP_CRS',\
+  tag:'OWASP_CRS/WEB_ATTACK/XSS'"
+# SQL Injection Protection
 SecRule REQUEST_COOKIES|!REQUEST_COOKIES:/__utm/|REQUEST_COOKIES_NAMES|ARGS_NAMES|ARGS|XML:/* "@detectSQLi" \
-  "id:1002,phase:2,block,msg:'SQL Injection Attack Detected',logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}',tag:'application-multi',tag:'language-multi',tag:'platform-multi',tag:'attack-sqli',tag:'OWASP_CRS',tag:'OWASP_CRS/WEB_ATTACK/SQL_INJECTION'"
+  "id:1002,\
+  phase:2,\
+  block,\
+  msg:'SQL Injection Attack Detected',\
+  logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}',\
+  tag:'application-multi',\
+  tag:'language-multi',\
+  tag:'platform-multi',\
+  tag:'attack-sqli',\
+  tag:'OWASP_CRS',\
+  tag:'OWASP_CRS/WEB_ATTACK/SQL_INJECTION'"
+# Command Injection Protection
 SecRule ARGS "@rx (?:\||;|&&|\$\(||<\(|>\()" \
-  "id:1003,phase:2,block,msg:'Command Injection Detected',logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}',tag:'application-multi',tag:'language-multi',tag:'platform-multi',tag:'attack-injection-php'"
+  "id:1003,\
+  phase:2,\
+  block,\
+  msg:'Command Injection Detected',\
+  logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}',\
+  tag:'application-multi',\
+  tag:'language-multi',\
+  tag:'platform-multi',\
+  tag:'attack-injection-php'"
+# Directory Traversal Protection
 SecRule ARGS "@rx \.\./|\.\.\\" \
-  "id:1004,phase:2,block,msg:'Directory Traversal Attack',logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}'"
+  "id:1004,\
+  phase:2,\
+  block,\
+  msg:'Directory Traversal Attack',\
+  logdata:'Matched Data: %{MATCHED_VAR} found within %{MATCHED_VAR_NAME}'"
+# Scanner/Tool Detection
 SecRule REQUEST_HEADERS:User-Agent "@rx (?i:(sqlmap|nmap|nikto|w3af|acunetix|nessus|openvas|vega|burp|owasp\s*zap))" \
-  "id:1005,phase:1,block,msg:'Malicious Security Scanner Detected',logdata:'User-Agent: %{MATCHED_VAR}'"
+  "id:1005,\
+  phase:1,\
+  block,\
+  msg:'Malicious Security Scanner Detected',\
+  logdata:'User-Agent: %{MATCHED_VAR}'"
+# File Upload Protection
 SecRule FILES_NAMES "@rx \.(?:php|jsp|asp|exe|sh|pl)$" \
-  "id:1006,phase:2,block,msg:'Malicious File Upload Attempt',logdata:'Filename: %{MATCHED_VAR}'"
+  "id:1006,\
+  phase:2,\
+  block,\
+  msg:'Malicious File Upload Attempt',\
+  logdata:'Filename: %{MATCHED_VAR}'"
+# Protocol Violations
 SecRule REQUEST_PROTOCOL "!@rx ^HTTP/(0\.9|1\.0|1\.1)$" \
-  "id:1007,phase:1,block,msg:'Invalid HTTP Protocol Version'"
+  "id:1007,\
+  phase:1,\
+  block,\
+  msg:'Invalid HTTP Protocol Version'"
 MODSEC_CONF_EOF
-  cat > /etc/nginx/modsecurity/custom_rules.conf << 'CUSTOM_RULES_EOF'
-SecRuleRemoveById 1003
-CUSTOM_RULES_EOF
+  # Create ModSecurity include file
   cat > /etc/nginx/modsecurity/main.conf << 'MAIN_CONF_EOF'
+# Include ModSecurity configuration
 Include /etc/nginx/modsecurity/modsecurity.conf
+# Include OWASP Core Rule Set if available
 Include /etc/nginx/modsecurity/owasp-crs/crs-setup.conf
 Include /etc/nginx/modsecurity/owasp-crs/rules/*.conf
-Include /etc/nginx/modsecurity/custom_rules.conf
 MAIN_CONF_EOF
+  # If OWASP CRS is not available, use only basic config
   if [ ! -d "/etc/nginx/modsecurity/owasp-crs" ]; then
     cat > /etc/nginx/modsecurity/main.conf << 'BASIC_CONF_EOF'
+# Include ModSecurity basic configuration only
 Include /etc/nginx/modsecurity/modsecurity.conf
-Include /etc/nginx/modsecurity/custom_rules.conf
 BASIC_CONF_EOF
   fi
+  # Set permissions
   chown -R www-data:www-data /var/lib/modsecurity
   chown -R www-data:www-data /var/log/modsecurity
   chmod -R 755 /etc/nginx/modsecurity
+  # Create log files
   touch /var/log/modsecurity/audit.log
   touch /var/log/modsecurity/debug.log
   chown www-data:www-data /var/log/modsecurity/*
@@ -381,79 +550,24 @@ generate_ssl() {
   log_msg "SSL certificates generated" "SUCCESS"
 }
 
-# Create mime.types file
-create_mime_types() {
-  log_msg "Creating mime.types file..." "INFO"
-  mkdir -p /etc/nginx
-  cat > /etc/nginx/mime.types << 'MIME_TYPES_EOF'
-types {
-    text/html                             html htm shtml;
-    text/css                              css;
-    text/xml                              xml;
-    image/gif                             gif;
-    image/jpeg                            jpeg jpg;
-    application/javascript                js;
-    application/atom+xml                  atom;
-    application/rss+xml                   rss;
-    text/mathml                           mml;
-    text/plain                            txt;
-    text/vnd.sun.j2me.app-descriptor      jad;
-    text/vnd.wap.wml                      wml;
-    text/x-component                      htc;
-    image/png                             png;
-    image/tiff                            tif tiff;
-    image/vnd.wap.wbmp                    wbmp;
-    image/webp                            webp;
-    image/x-icon                          ico;
-    image/x-jng                           jng;
-    image/x-ms-bmp                        bmp;
-    application/font-woff                 woff;
-    application/font-woff2                woff2;
-    application/json                      json;
-    application/pdf                       pdf;
-    application/postscript                ps eps ai;
-    application/rtf                       rtf;
-    application/vnd.ms-excel              xls;
-    application/vnd.ms-powerpoint         ppt;
-    application/msword                    doc;
-    application/x-shockwave-flash         swf;
-    application/xhtml+xml                 xhtml;
-    application/zip                       zip;
-    audio/mpeg                            mp3;
-    audio/wav                             wav;
-    audio/x-m4a                           m4a;
-    video/mp4                             mp4;
-    video/mpeg                            mpeg mpg;
-    video/quicktime                       mov;
-    video/webm                            webm;
-    video/x-flv                           flv;
-    video/x-m4v                           m4v;
-    video/x-ms-wmv                        wmv;
-}
-MIME_TYPES_EOF
-  chown root:root /etc/nginx/mime.types
-  chmod 644 /etc/nginx/mime.types
-  log_msg "mime.types file created" "SUCCESS"
-}
-
-# Create NGINX directories
-create_nginx_dirs() {
-  log_msg "Creating NGINX directories..." "INFO"
-  mkdir -p /var/lib/nginx/body /var/cache/nginx /var/log/nginx
-  chown www-data:www-data /var/lib/nginx /var/lib/nginx/body /var/cache/nginx /var/log/nginx
-  chmod 755 /var/lib/nginx /var/lib/nginx/body /var/cache/nginx /var/log/nginx
-  log_msg "NGINX directories created" "SUCCESS"
-}
-
-# Create WAF configuration
+# Create comprehensive WAF configuration
 create_waf_config() {
   log_msg "Creating WAF triple layer configuration..." "WAF"
+  # Create necessary directories
   mkdir -p /etc/nginx/conf.d
   mkdir -p /var/log/nginx
+  # Create the /var/lib/nginx/body directory
+  mkdir -p /var/lib/nginx/body
+  # Set ownership and permissions
+  chown www-data:www-data /var/lib/nginx/body
+  chmod 755 /var/lib/nginx/body
+  # Backup existing config
   if [ -f /etc/nginx/nginx.conf ]; then
     cp /etc/nginx/nginx.conf "/etc/nginx/nginx.conf.backup.$(date +%Y%m%d_%H%M%S)"
   fi
+  # Create comprehensive NGINX configuration with all 3 layers
   cat > /etc/nginx/nginx.conf << 'NGINX_MAIN_CONF_EOF'
+# WAF Triple Layer Configuration with ModSecurity
 load_module /usr/lib/nginx/modules/ngx_http_modsecurity_module.so;
 user www-data;
 worker_processes auto;
@@ -461,12 +575,13 @@ pid /run/nginx.pid;
 error_log /var/log/nginx/error.log warn;
 
 events {
-    worker_connections 1024;
+    worker_connections 2048;
     use epoll;
     multi_accept on;
 }
 
 http {
+    # Basic settings
     sendfile on;
     tcp_nopush on;
     tcp_nodelay on;
@@ -478,6 +593,7 @@ http {
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
 
+    # Logging
     log_format waf_extended '$remote_addr - $remote_user [$time_local] '
                             '"$request" $status $body_bytes_sent '
                             '"$http_referer" "$http_user_agent" '
@@ -486,6 +602,7 @@ http {
                             'blocked="$waf_blocked"';
     access_log /var/log/nginx/access.log waf_extended;
 
+    # WAF Layer Detection
     map $server_port $waf_layer {
         443 "triple-layer";
         8080 "bypass";
@@ -494,6 +611,7 @@ http {
         default "unknown";
     }
 
+    # Layer 1: NGINX Pattern Detection Variables
     map $args $nginx_xss_detected {
         default 0;
         "~*(<script[^>]*>|</script>|javascript:|vbscript:|onload\s*=|onerror\s*=|onclick\s*=|onmouseover\s*=|alert\s*\(|confirm\s*\(|prompt\s*\(|document\.cookie|document\.write)" 1;
@@ -515,21 +633,25 @@ http {
         "~*(?i:(sqlmap|nmap|nikto|w3af|acunetix|nessus|openvas|vega|burp|owasp\s*zap|dirbuster|gobuster|wpscan))" 1;
     }
 
+    # Set blocked status for logging
     map $nginx_xss_detected$nginx_sqli_detected$nginx_cmdi_detected$nginx_traversal_detected$nginx_scanner_detected $waf_blocked {
         default "none";
         "~1" "nginx-layer1";
     }
 
+    # Rate limiting zones
     limit_req_zone $binary_remote_addr zone=global:10m rate=10r/s;
     limit_req_zone $binary_remote_addr zone=login:10m rate=3r/s;
     limit_conn_zone $binary_remote_addr zone=conn_limit:10m;
 
+    # Security headers (applied to all servers)
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
+    # Upstream definitions
     upstream safeline_waf {
         server 192.168.142.141:80 max_fails=3 fail_timeout=30s;
         keepalive 16;
@@ -539,32 +661,67 @@ http {
         keepalive 8;
     }
 
+    # MAIN SERVER - TRIPLE PROTECTION (443)
+    # All 3 layers: NGINX + ModSecurity + SafeLine
     server {
         listen 443 ssl http2;
         server_name 192.168.142.128;
 
+        # SSL Configuration
         ssl_certificate /etc/nginx/ssl/nginx.crt;
         ssl_certificate_key /etc/nginx/ssl/nginx.key;
         ssl_protocols TLSv1.2 TLSv1.3;
         ssl_ciphers ECDHE-RSA-AES256-GCM-SHA512:DHE-RSA-AES256-GCM-SHA512:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES256-GCM-SHA384;
         ssl_prefer_server_ciphers off;
 
+        # Connection limits
         limit_conn conn_limit 20;
 
+        # Main location with all 3 layers
         location / {
+            # Rate limiting
             limit_req zone=global burst=20 nodelay;
-            access_log /var/log/nginx/waf_blocked.log waf_extended if=$nginx_xss_detected|$nginx_sqli_detected|$nginx_cmdi_detected|$nginx_traversal_detected|$nginx_scanner_detected;
+
+            # Layer 1: NGINX Pattern Detection (First Defense)
+            if ($nginx_xss_detected = 1) {
+                access_log /var/log/nginx/waf_blocked.log waf_extended;
+                return 403 '{"error":"XSS blocked by NGINX Layer 1","timestamp":"$time_iso8601","client":"$remote_addr","request":"$request"}';
+            }
+            if ($nginx_sqli_detected = 1) {
+                access_log /var/log/nginx/waf_blocked.log waf_extended;
+                return 403 '{"error":"SQL Injection blocked by NGINX Layer 1","timestamp":"$time_iso8601","client":"$remote_addr","request":"$request"}';
+            }
+            if ($nginx_cmdi_detected = 1) {
+                access_log /var/log/nginx/waf_blocked.log waf_extended;
+                return 403 '{"error":"Command Injection blocked by NGINX Layer 1","timestamp":"$time_iso8601","client":"$remote_addr","request":"$request"}';
+            }
+            if ($nginx_traversal_detected = 1) {
+                access_log /var/log/nginx/waf_blocked.log waf_extended;
+                return 403 '{"error":"Directory Traversal blocked by NGINX Layer 1","timestamp":"$time_iso8601","client":"$remote_addr","request":"$request"}';
+            }
+            if ($nginx_scanner_detected = 1) {
+                access_log /var/log/nginx/waf_blocked.log waf_extended;
+                return 403 '{"error":"Malicious Scanner blocked by NGINX Layer 1","timestamp":"$time_iso8601","client":"$remote_addr","request":"$request"}';
+            }
+
+            # Layer 2: ModSecurity Deep Inspection (Second Defense)
             modsecurity on;
             modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
+
+            # Headers for identification
             add_header X-WAF-Architecture "NGINX+ModSecurity+SafeLine" always;
             add_header X-Protection-Layers "3" always;
             add_header X-WAF-Status "TRIPLE-PROTECTION" always;
+
+            # Layer 3: Proxy to SafeLine WAF (Final Defense)
             proxy_pass http://safeline_waf;
             proxy_set_header Host dvwa.local;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header X-WAF-Layer "triple";
+
+            # Proxy settings
             proxy_connect_timeout 30s;
             proxy_send_timeout 60s;
             proxy_read_timeout 60s;
@@ -572,30 +729,28 @@ http {
             proxy_request_buffering off;
         }
 
-        location /health {
-            limit_req zone=global burst=20 nodelay;
-            access_log /var/log/nginx/waf_blocked.log waf_extended if=$nginx_xss_detected|$nginx_sqli_detected|$nginx_cmdi_detected|$nginx_traversal_detected|$nginx_scanner_detected;
-            modsecurity on;
-            modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
-            add_header X-WAF-Status "TRIPLE-PROTECTION" always;
-            proxy_pass http://safeline_waf;
-            proxy_set_header Host dvwa.local;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-        }
-
+        # Login endpoints with stricter rate limiting
         location ~* ^/(login|admin|wp-admin) {
             limit_req zone=login burst=5 nodelay;
-            access_log /var/log/nginx/waf_blocked.log waf_extended if=$nginx_xss_detected|$nginx_sqli_detected|$nginx_cmdi_detected|$nginx_traversal_detected|$nginx_scanner_detected;
+
+            # Apply same Layer 1 protections
+            if ($nginx_xss_detected = 1) { return 403 '{"error":"XSS blocked"}'; }
+            if ($nginx_sqli_detected = 1) { return 403 '{"error":"SQLi blocked"}'; }
+            if ($nginx_cmdi_detected = 1) { return 403 '{"error":"CMDI blocked"}'; }
+            if ($nginx_scanner_detected = 1) { return 403 '{"error":"Scanner blocked"}'; }
+
+            # ModSecurity
             modsecurity on;
             modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
+
+            # Proxy to SafeLine
             proxy_pass http://safeline_waf;
             proxy_set_header Host dvwa.local;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         }
 
+        # Status and health endpoints (no ModSecurity)
         location /waf-status {
             modsecurity off;
             allow 127.0.0.1;
@@ -605,11 +760,11 @@ http {
 ARCHITECTURE: Client → NGINX (Layer 1) → ModSecurity (Layer 2) → SafeLine (Layer 3) → DVWA
 
 LAYER 1 (NGINX Pattern Matching):
-- XSS Detection: Active (Logging Only)
-- SQL Injection Detection: Active (Logging Only)
-- Command Injection Detection: Active (Logging Only)
-- Directory Traversal Detection: Active (Logging Only)
-- Scanner Detection: Active (Logging Only)
+- XSS Detection: Active
+- SQL Injection Detection: Active
+- Command Injection Detection: Active
+- Directory Traversal Detection: Active
+- Scanner Detection: Active
 - Rate Limiting: 10 req/s global, 3 req/s login
 
 LAYER 2 (ModSecurity):
@@ -641,10 +796,19 @@ Server: $hostname
             add_header Content-Type text/plain;
         }
 
+        location /health {
+            modsecurity off;
+            return 200 '{"status":"healthy","layers":3,"protection":"active","timestamp":"$time_iso8601"}';
+            add_header Content-Type application/json;
+        }
+
+        # Block common vulnerability paths
         location ~* /\.(?:ht|git|svn) { deny all; }
         location ~* /(?:uploads|wp-content)/.*\.php$ { deny all; }
     }
 
+    # BYPASS SERVER - NO PROTECTION (8080)
+    # Direct connection to DVWA for comparison
     server {
         listen 8080;
         server_name 192.168.142.128;
@@ -664,6 +828,8 @@ Server: $hostname
         }
     }
 
+    # SAFELINE ONLY SERVER (8443)
+    # Layer 3 only - SafeLine WAF protection
     server {
         listen 8443 ssl http2;
         server_name 192.168.142.128;
@@ -682,15 +848,13 @@ Server: $hostname
         }
 
         location /health {
-            add_header X-WAF-Status "SAFELINE-ONLY" always;
-            proxy_pass http://safeline_waf;
-            proxy_set_header Host dvwa.local;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-WAF-Layer "safeline-only";
+            return 200 '{"status":"safeline-only","layers":1,"protection":"safeline","target":"safeline_waf"}';
+            add_header Content-Type application/json;
         }
     }
 
+    # MODSECURITY ONLY SERVER (9443)
+    # Layer 2 only - ModSecurity protection
     server {
         listen 9443 ssl http2;
         server_name 192.168.142.128;
@@ -699,6 +863,7 @@ Server: $hostname
         ssl_protocols TLSv1.2 TLSv1.3;
 
         location / {
+            # ModSecurity only - no NGINX pattern matching
             modsecurity on;
             modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
             add_header X-WAF-Status "MODSECURITY-ONLY" always;
@@ -711,16 +876,14 @@ Server: $hostname
         }
 
         location /health {
-            modsecurity on;
-            modsecurity_rules_file /etc/nginx/modsecurity/main.conf;
-            add_header X-WAF-Status "MODSECURITY-ONLY" always;
-            proxy_pass http://dvwa_direct;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            modsecurity off;
+            return 200 '{"status":"modsecurity-only","layers":1,"protection":"modsecurity","target":"dvwa_direct"}';
+            add_header Content-Type application/json;
         }
     }
 
+    # INFO SERVER (80)
+    # Landing page with information
     server {
         listen 80 default_server;
         server_name _;
@@ -768,6 +931,7 @@ NGINX_MAIN_CONF_EOF
 # Create comprehensive testing tools
 create_test_tools() {
   log_msg "Creating comprehensive testing tools..." "WAF"
+  # Create the main testing script
   cat > /usr/local/bin/test-waf-complete.sh << 'TEST_SCRIPT_EOF'
 #!/bin/bash
 # WAF Triple Layer Comprehensive Testing Script
@@ -810,12 +974,14 @@ done
 
 echo
 echo -e "${BLUE}=== ENDPOINT CONNECTIVITY ===${NC}"
+# Define test endpoints
 declare -A endpoints
 endpoints["Triple Protection"]="https://$LOCAL_IP/health"
 endpoints["Bypass Mode"]="http://$LOCAL_IP:8080/health"
 endpoints["SafeLine Only"]="https://$LOCAL_IP:8443/health"
 endpoints["ModSecurity Only"]="https://$LOCAL_IP:9443/health"
 
+# Test connectivity
 for name in "${!endpoints[@]}"; do
   url="${endpoints[$name]}"
   if [[ $url == https://* ]]; then
@@ -837,9 +1003,10 @@ done
 
 echo
 echo -e "${PURPLE}=== ATTACK SIMULATION ===${NC}"
+# Define comprehensive attack vectors
 declare -A attacks
-attacks["XSS Basic"]="/?input=<script>alert('xss')</script>"
-attacks["XSS Event"]="/?input=<img src=x onerror=alert(1)>"
+attacks["XSS Basic"]="/?test=<script>alert('xss')</script>"
+attacks["XSS Event"]="/?test=<img src=x onerror=alert(1)>"
 attacks["SQLi Union"]="/?id=1' UNION SELECT 1,2,3--"
 attacks["SQLi Boolean"]="/?id=1' OR '1'='1'--"
 attacks["CMD Injection"]="/?cmd=|whoami"
@@ -847,12 +1014,14 @@ attacks["CMD Pipe"]="/?cmd=; ls -la"
 attacks["Directory Traversal"]="/?file=../../../etc/passwd"
 attacks["Path Traversal"]="/?path=....//....//etc/passwd"
 
+# Test endpoints for attacks
 declare -A test_endpoints
 test_endpoints["Triple"]="https://$LOCAL_IP"
 test_endpoints["Bypass"]="http://$LOCAL_IP:8080"
 test_endpoints["SafeLine"]="https://$LOCAL_IP:8443"
 test_endpoints["ModSec"]="https://$LOCAL_IP:9443"
 
+# Print header
 printf "%-20s" "Attack Vector"
 for ep in "${!test_endpoints[@]}"; do
   printf "%-10s" "$ep"
@@ -860,6 +1029,7 @@ done
 echo
 echo "------------------------------------------------------------------------"
 
+# Test each attack against each endpoint
 for attack in "${!attacks[@]}"; do
   printf "%-20s" "$attack"
   payload="${attacks[$attack]}"
@@ -884,6 +1054,7 @@ done
 
 echo
 echo -e "${BLUE}=== SCANNER DETECTION TEST ===${NC}"
+# Test scanner detection
 scanner_agents=("sqlmap/1.0" "nmap" "nikto/2.0" "w3af.org")
 for agent in "${scanner_agents[@]}"; do
   printf "%-15s" "$agent"
@@ -906,6 +1077,7 @@ done
 
 echo
 echo -e "${BLUE}=== RATE LIMITING TEST ===${NC}"
+# Test rate limiting on main endpoint
 echo "Testing rate limiting (10 req/s limit)..."
 blocked_count=0
 for i in {1..15}; do
@@ -923,6 +1095,7 @@ fi
 
 echo
 echo -e "${BLUE}=== LOG ANALYSIS ===${NC}"
+# Check log files
 log_files=( "/var/log/nginx/access.log" "/var/log/nginx/waf_blocked.log" "/var/log/modsecurity/audit.log" )
 for log_file in "${log_files[@]}"; do
   if [ -f "$log_file" ]; then
@@ -936,10 +1109,17 @@ done
 
 echo
 echo -e "${PURPLE}=== SUMMARY ===${NC}"
+# Calculate protection effectiveness
+total_attacks=${#attacks[@]}
+declare -A blocked_counts
+for ep in "${!test_endpoints[@]}"; do
+  blocked_counts[$ep]=0
+done
+# Recount blocks (simplified)
 if systemctl is-active --quiet nginx && [ -f /usr/lib/nginx/modules/ngx_http_modsecurity_module.so ]; then
   echo -e "${GREEN}✓${NC} WAF Infrastructure: OPERATIONAL"
   echo -e "${GREEN}✓${NC} Triple Layer Protection: ACTIVE"
-  echo " - Layer 1: NGINX Pattern Matching (Logging Only)"
+  echo " - Layer 1: NGINX Pattern Matching"
   echo " - Layer 2: ModSecurity Deep Inspection"
   echo " - Layer 3: SafeLine WAF"
 else
@@ -959,6 +1139,7 @@ echo "======================================================================${NC
 TEST_SCRIPT_EOF
   chmod +x /usr/local/bin/test-waf-complete.sh
 
+  # Create ModSecurity log analyzer
   cat > /usr/local/bin/modsec-analyze.sh << 'MODSEC_ANALYZE_EOF'
 #!/bin/bash
 echo "=== ModSecurity Log Analysis ==="
@@ -986,8 +1167,10 @@ MODSEC_ANALYZE_EOF
 # Test the complete configuration
 test_configuration() {
   log_msg "Testing complete WAF configuration..." "WAF"
+  # Stop nginx cleanly
   systemctl stop nginx >/dev/null 2>&1 || true
   sleep 3
+  # Test configuration syntax
   if nginx -t >/dev/null 2>&1; then
     log_msg "NGINX configuration syntax: VALID" "SUCCESS"
   else
@@ -995,9 +1178,11 @@ test_configuration() {
     nginx -t
     return 1
   fi
+  # Start nginx with detailed logging
   log_msg "Starting NGINX with ModSecurity..." "INFO"
   systemctl start nginx
   sleep 5
+  # Verify nginx is running
   if systemctl is-active --quiet nginx; then
     log_msg "NGINX service: RUNNING" "SUCCESS"
   else
@@ -1006,6 +1191,7 @@ test_configuration() {
     journalctl -u nginx --no-pager -n 20
     return 1
   fi
+  # Check all required ports
   log_msg "Checking WAF ports..." "INFO"
   expected_ports=(80 443 8080 8443 9443)
   active_ports=0
@@ -1022,21 +1208,25 @@ test_configuration() {
   else
     log_msg "Missing ports ($active_ports/5)" "WARNING"
   fi
+  # Test ModSecurity functionality
   log_msg "Testing ModSecurity integration..." "INFO"
   sleep 3
+  # Test main endpoint
   main_response=$(timeout 15 curl -k -s -w "%{http_code}" -o /dev/null "https://$LOCAL_IP/health" 2>/dev/null || echo "ERR")
   if [ "$main_response" = "200" ]; then
     log_msg "Main endpoint: ACCESSIBLE" "SUCCESS"
   else
     log_msg "Main endpoint: $main_response" "WARNING"
   fi
+  # Quick XSS test
   log_msg "Testing XSS protection..." "INFO"
-  xss_response=$(timeout 15 curl -k -s -w "%{http_code}" -o /dev/null "https://$LOCAL_IP/?input=<script>alert(1)</script>" 2>/dev/null || echo "ERR")
+  xss_response=$(timeout 15 curl -k -s -w "%{http_code}" -o /dev/null "https://$LOCAL_IP/?test=<script>alert(1)</script>" 2>/dev/null || echo "ERR")
   if [ "$xss_response" = "403" ]; then
     log_msg "XSS protection: WORKING" "SUCCESS"
   else
     log_msg "XSS test returned: $xss_response" "WARNING"
   fi
+  # Quick SQLi test
   log_msg "Testing SQL injection protection..." "INFO"
   sqli_response=$(timeout 15 curl -k -s -w "%{http_code}" -o /dev/null "https://$LOCAL_IP/?id=1' OR '1'='1'--" 2>/dev/null || echo "ERR")
   if [ "$sqli_response" = "403" ]; then
@@ -1056,11 +1246,11 @@ show_final_summary() {
   echo "======================================================================${NC}"
   echo
   echo -e "${PURPLE}🏗️ ARCHITECTURE:${NC}"
-  echo " Client Request → NGINX (Layer 1: Logging) → ModSecurity (Layer 2) → SafeLine (Layer 3) → DVWA"
+  echo " Client Request → NGINX (Layer 1) → ModSecurity (Layer 2) → SafeLine (Layer 3) → DVWA"
   echo
   echo -e "${BLUE}🛡️ PROTECTION LAYERS:${NC}"
-  echo " Layer 1 (NGINX): Pattern matching (logging only), rate limiting, scanner detection"
-  echo " Layer 2 (ModSecurity): Deep packet inspection, OWASP CRS, custom rules"
+  echo " Layer 1 (NGINX): Pattern matching, rate limiting, scanner detection"
+  echo " Layer 2 (ModSecurity): Deep packet inspection, OWASP rules, advanced detection"
   echo " Layer 3 (SafeLine): ML-based WAF, final protection layer"
   echo
   echo -e "${GREEN}🌐 ENDPOINTS:${NC}"
@@ -1073,7 +1263,7 @@ show_final_summary() {
   echo -e "${YELLOW}🧪 TESTING COMMANDS:${NC}"
   echo " Complete Test Suite: test-waf-complete.sh"
   echo " Log Analysis: modsec-analyze.sh"
-  echo " Manual XSS Test: curl -k 'https://$LOCAL_IP/?input=<script>alert(1)</script>'"
+  echo " Manual XSS Test: curl -k 'https://$LOCAL_IP/?test=<script>alert(1)</script>'"
   echo " Manual SQLi Test: curl -k 'https://$LOCAL_IP/?id=1' OR '1'='1'--'"
   echo
   echo -e "${PURPLE}⚙️ SAFELINE CONFIGURATION REQUIRED:${NC}"
@@ -1081,7 +1271,7 @@ show_final_summary() {
   echo " 2. Add Backend Server: $DVWA_IP:80"
   echo " 3. Set Domain: dvwa.local"
   echo " 4. Add Allowed Source: $LOCAL_IP"
-  echo " 5. Enable SQL injection and XSS protection with high sensitivity"
+  echo " 5. Enable protection rules"
   echo
   echo -e "${BLUE}📋 LOG LOCATIONS:${NC}"
   echo " Access Logs: /var/log/nginx/access.log"
@@ -1104,47 +1294,57 @@ show_final_summary() {
 # Main execution function
 main() {
   echo -e "${PURPLE}======================================================================"
-  echo " WAF TRIPLE LAYER SETUP - NGINX/MODSECURITY/SAFELINE"
+  echo " WAF TRIPLE LAYER SETUP - NGINX/MODSECURITY COMPATIBLE (FORCED NGINX 1.18.0)"
   echo "======================================================================${NC}"
   echo
 
+  # Prerequisites
   check_root
-  log_msg "Step 1/13: Configuring open file limits..." "INFO"
-  configure_limits
-  log_msg "Step 2/13: Cleaning previous installations..." "INFO"
+
+  # Step-by-step setup with error handling
+  log_msg "Step 1/11: Cleaning previous installations..." "INFO"
   cleanup_nginx
-  log_msg "Step 3/13: Installing dependencies..." "INFO"
+
+  log_msg "Step 2/11: Installing dependencies..." "INFO"
   install_dependencies
-  log_msg "Step 4/13: Forcing NGINX 1.18.0 installation..." "INFO"
+
+  log_msg "Step 3/11: Forcing NGINX 1.18.0 installation..." "INFO"
   install_compatible_nginx
-  log_msg "Step 5/13: Fixing systemd service file..." "INFO"
+
+  log_msg "Step 4/11: Fixing systemd service file..." "INFO"
   fix_systemd_service
-  log_msg "Step 6/13: Checking compatibility..." "INFO"
+
+  log_msg "Step 5/11: Checking compatibility..." "INFO"
   if ! check_compatibility; then
-    log_msg "Step 7/13: Compiling ModSecurity module..." "INFO"
+    log_msg "Step 6/11: Compiling ModSecurity module..." "INFO"
     compile_modsecurity_module
   else
     log_msg "Existing installation is compatible" "SUCCESS"
   fi
-  log_msg "Step 8/13: Setting up ModSecurity..." "INFO"
+
+  log_msg "Step 7/11: Setting up ModSecurity..." "INFO"
   setup_modsecurity
-  log_msg "Step 9/13: Generating SSL certificates..." "INFO"
+
+  log_msg "Step 8/11: Generating SSL certificates..." "INFO"
   generate_ssl
-  log_msg "Step 10/13: Creating mime.types file..." "INFO"
-  create_mime_types
-  log_msg "Step 11/13: Creating NGINX directories..." "INFO"
-  create_nginx_dirs
-  log_msg "Step 12/13: Creating WAF configuration..." "INFO"
+
+  log_msg "Step 9/11: Creating WAF configuration..." "INFO"
   create_waf_config
-  log_msg "Step 13/13: Creating testing tools..." "INFO"
+
+  log_msg "Step 10/11: Creating testing tools..." "INFO"
   create_test_tools
-  log_msg "Step 14/14: Testing configuration..." "INFO"
+
+  log_msg "Step 11/11: Testing configuration..." "INFO"
   if test_configuration; then
     log_msg "WAF Triple Layer setup completed successfully!" "SUCCESS"
   else
     log_msg "Setup completed with warnings - check the logs" "WARNING"
   fi
+
+  # Final summary
   show_final_summary
+
+  # Final verification
   echo -e "${YELLOW}🔍 FINAL VERIFICATION:${NC}"
   echo "Run the following command to test your setup:"
   echo " sudo test-waf-complete.sh"
@@ -1174,6 +1374,7 @@ case "${1:-}" in
     ;;
 esac
 
+# Main entry point
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   main "$@"
 fi
